@@ -1,5 +1,18 @@
 #!/bin/bash
 
+getUsedSpacePercentage() {
+    # Calculating it our own way that trims the decimal reminder
+    # instead of rounding the result to the nearest integer like df does
+    local totalSpace="$(df /home/$USER --output=size | tail -1)"
+    local usedSpace="$(df /home/$USER --output=used | tail -1)"
+    local availableSpace="$(df /home/$USER --output=avail | tail -1)"
+    # There is also some unavailable space on the partition that we have to
+    # take into account when calculating totals
+    local reservedSpace="$(($totalSpace - $usedSpace - $availableSpace))"
+    usedSpacePercentage=$(awk -v totalSpace="$totalSpace" -v usedSpace="$usedSpace" -v reservedSpace="$reservedSpace" 'BEGIN{print ((usedSpace+reservedSpace)/totalSpace)*100}' | tr ',' '.')
+    echo $usedSpacePercentage
+}
+
 showPartitionInformation() {
     local partition=$(df /home/$USER --output=source | tail -1)
     echo "Partition containing /home/\$USER:  $partition"
@@ -94,6 +107,60 @@ getLimitFromArguments() {
     fi
 }
 
+fileDeletion() {
+    echo ""
+    echo "File deletion"
+    echo ""
+
+    rm -f /tmp/hdguard-file-list
+    find /home/$USER -perm /u+w,g+w -user $USER -not -path '*/.*' -type f -ls | tr -s ' ' | sort -rn -k7 | cut --complement -d' ' -f1,2,3,4,5,6,7,9,10,11 | awk '{print 1 " " NR " " $0}' >/tmp/hdguard-file-list
+
+    if ! [ -s /tmp/hdguard-file-list ]; then
+        echo "No deletable files found"
+        exit 1
+    fi
+
+    local totalSpace="$(df /home/$USER --output=size | tail -1)"
+    local usedSpacePercentage=$(getUsedSpacePercentage)
+
+    ### DEBUG ###
+    # cat /tmp/hdguard-file-list | head -50
+    # local usedSpace="$(df /home/$USER --output=used | tail -1)"
+    # local availableSpace="$(df /home/$USER --output=avail | tail -1)"
+    # local reservedSpace="$(($totalSpace - $usedSpace - $availableSpace))"
+    echo "totalSpace:             $totalSpace KB"
+    # echo "usedSpace:              $usedSpace"
+    # echo "availableSpace:         $availableSpace"
+    # echo "reservedSpace:          $reservedSpace"
+    echo "usedSpacePercentage:      $usedSpacePercentage%"
+    # head -10 </tmp/hdguard-file-list
+    ### DEBUG ###
+
+    local percentageToDelete=$(echo "$usedSpacePercentage - $limit" | bc)
+    echo "Total space % to delete:  $percentageToDelete%"
+    local KBToDelete=$(echo "($percentageToDelete * $totalSpace / 100) + 1" | bc)
+    echo "KB to delete:             $KBToDelete KB"
+    local bytesToDelete=$(echo "$KBToDelete * 1024" | bc)
+    echo "bytesToDelete: $          $bytesToDelete B"
+
+    suggestedFilesSize=0
+    while IFS= read -r line; do
+        local fileSize=$(awk -F' ' '{print $3}' <<<$line)
+        suggestedFilesSize=$(($suggestedFilesSize + $fileSize))
+        if [ $suggestedFilesSize -gt $bytesToDelete ]; then
+            break
+        fi
+    done </tmp/hdguard-file-list
+
+    if [ $bytesToDelete -gt $suggestedFilesSize ]; then
+        echo "Not enough deletable files found to free up disk space usage to $limit%"
+        exit 1
+    fi
+
+    echo "suggestedFilesSize:       $suggestedFilesSize B"
+
+}
+
 limitReachedAction() {
     echo "Available space limit reached."
     echo ""
@@ -103,9 +170,7 @@ limitReachedAction() {
     read -rsn1 selection
     case $selection in
     1)
-        echo ""
-        echo "Files deleted"
-        echo ""
+        fileDeletion
         delayWithDots $timeDelay
         ;;
     2)
@@ -135,20 +200,19 @@ ignoreAllWarnings=false
 getLimitFromArguments $# $1
 timeDelay=5
 
-while true; do
-    while true; do
-        clear
-        showTitle
-        usagePercentage="$(df /home/$USER --output=pcent | tail -1 | tr -d '%')"
-        echo "Taken up space user-set limit:     $limit%"
-        echo "Current partition space usage:    $usagePercentage%"
-        echo ""
-        if [ "$ignoreAllWarnings" = false ] && [ $usagePercentage -gt $limit ]; then
-            break
-        fi
-        delayWithDots $timeDelay
-    done
-    limitReachedAction
-done
+# while true; do
+#     while true; do
+#         clear
+#         showTitle
+#         usagePercentage=$(getUsedSpacePercentage)
+#         if [ "$ignoreAllWarnings" = false ] && [ $(echo "$usagePercentage > $limit" | bc) -ne 0 ]; then
+#             break
+#         fi
+#         delayWithDots $timeDelay
+#     done
+#     limitReachedAction
+# done
+
+fileDeletion
 
 exit 0
