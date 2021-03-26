@@ -28,8 +28,6 @@ showPartitionInformation() {
 
     local availableSpace="$(df /home/$USER -h --output=avail | tail -1)"
     echo "Available space:                  $availableSpace"
-
-    echo ""
 }
 
 showTitle() {
@@ -43,6 +41,8 @@ showTitle() {
     echo ""
     echo ""
     showPartitionInformation
+    echo "Selected disk space % threshold:   $limit%"
+    echo ""
 }
 
 delayWithDots() {
@@ -125,7 +125,7 @@ updateFilesToDelete() {
     done </tmp/hdguard-file-list
     if [ $bytesToDelete -gt $suggestedFilesByteSize ]; then
         echo ""
-        echo "Not enough deletable files found to free up disk space usage to $limit%"
+        echo "Not enough deletable files found to reduce disk space usage to $limit%"
         exit 1
     fi
     echo ""
@@ -144,6 +144,7 @@ fileDeletionPrompt() {
     echo "The list will be then populated with next files."
     echo '"delete" + ENTER to start deleting selected files'
     echo '"abort" + ENTER to start abort the deletion process'
+    echo ""
 }
 
 fileDeletion() {
@@ -176,22 +177,31 @@ fileDeletion() {
         read -r selection
         case $selection in
         delete)
+            dateTime=$(date +'%Y-%m-%d_%H:%M')
+            declare -a deletedPaths
             for fileLine in ${filesToDelete[@]}; do
-                local deletionPath=$(cut --complement -d' ' -f1,2,3 <<<$fileLine | sed 's,\s*\\\s*, ,g' )
+                local deletionPath=$(cut --complement -d' ' -f1,2,3 <<<$fileLine | sed 's,\s*\\\s*, ,g')
+                echo ""
                 echo "Are you sure you want to delete '$deletionPath'?"
                 echo "Press 'y' to confirm, any other key press will abort."
+                echo ""
                 read -rsn1 deletionConfirmation
                 case $deletionConfirmation in
-                y) 
-                    rm $deletionPath
-                ;;
-                *) 
+                y)
+                    rm -f $deletionPath
+                    IFS=$'\r\n'
+                    deletedPaths+=("$deletionPath")
+                    IFS=
+                    echo "Deleted '$deletionPath'"
+                    ;;
+                *)
                     echo "Deletion of '$deletionPath' aborted."
-                ;;
+                    ;;
                 esac
-                echo "Deleted '$deletionPath'"
             done
-            echo "Deleted all selected files."
+            echo "Deleted all selected files that didn't have their deletion aborted."
+            printf "%s\n" "${deletedPaths[@]}" >/home/"$USER"/hdguard_"$dateTime".deleted
+            echo "Saved the list of deleted files in /home/"$USER"/hdguard_"$dateTime".deleted"
             delayWithDots 5
             break
             ;;
@@ -274,9 +284,9 @@ timeDelay=60
 
 while true; do
     while true; do
+        usagePercentage=$(getUsedSpacePercentage)
         clear
         showTitle
-        usagePercentage=$(getUsedSpacePercentage)
         if [ "$ignoreAllWarnings" = false ] && [ $(echo "$usagePercentage > $limit" | bc) -ne 0 ]; then
             break
         fi
