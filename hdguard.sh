@@ -41,6 +41,7 @@ showTitle() {
     echo "   | |  | | |__| |   | |__| | |_| | (_| | | | (_| |"
     echo "   |_|  |_|_____/     \_____|\__,_|\__,_|_|  \__,_|"
     echo ""
+    echo ""
     showPartitionInformation
 }
 
@@ -108,21 +109,21 @@ getLimitFromArguments() {
 }
 
 updateFilesToDelete() {
-    local suggestedFilesSize=0
+    local suggestedFilesByteSize=0
     filesToDelete=()
     while IFS= read -r line; do
         if ! [[ $(awk '{print $1}' <<<$line) -eq 0 ]]; then
             local fileSize=$(awk -F' ' '{print $3}' <<<$line)
-            suggestedFilesSize=$(($suggestedFilesSize + $fileSize))
+            suggestedFilesByteSize=$(($suggestedFilesByteSize + $fileSize))
             IFS=$'\r\n'
             filesToDelete+=("$line")
             IFS=
-            if [ $suggestedFilesSize -gt $bytesToDelete ]; then
+            if [ $suggestedFilesByteSize -gt $bytesToDelete ]; then
                 break
             fi
         fi
     done </tmp/hdguard-file-list
-    if [ $bytesToDelete -gt $suggestedFilesSize ]; then
+    if [ $bytesToDelete -gt $suggestedFilesByteSize ]; then
         echo ""
         echo "Not enough deletable files found to free up disk space usage to $limit%"
         exit 1
@@ -133,6 +134,8 @@ updateFilesToDelete() {
     for fileLine in ${filesToDelete[@]}; do
         echo $(cut --complement -d' ' -f1 <<<$fileLine | awk '{$2=($2/1024) " KB"; print}')
     done
+    echo ""
+    echo "Selected for deletion in total:    $(echo "($suggestedFilesByteSize / 1024) + 1" | bc) KB"
     echo ""
 }
 
@@ -173,7 +176,23 @@ fileDeletion() {
         read -r selection
         case $selection in
         delete)
-            echo "DELETE THE FILES"
+            for fileLine in ${filesToDelete[@]}; do
+                local deletionPath=$(cut --complement -d' ' -f1,2,3 <<<$fileLine | sed 's,\s*\\\s*, ,g' )
+                echo "Are you sure you want to delete '$deletionPath'?"
+                echo "Press 'y' to confirm, any other key press will abort."
+                read -rsn1 deletionConfirmation
+                case $deletionConfirmation in
+                y) 
+                    rm $deletionPath
+                ;;
+                *) 
+                    echo "Deletion of '$deletionPath' aborted."
+                ;;
+                esac
+                echo "Deleted '$deletionPath'"
+            done
+            echo "Deleted all selected files."
+            delayWithDots 5
             break
             ;;
         abort)
@@ -181,7 +200,7 @@ fileDeletion() {
             break
             ;;
         *)
-            if [[ "$limit" =~ $numberRegex ]]; then
+            if [[ "$selection" =~ $numberRegex ]]; then
                 local isIndexPresent=false
                 for fileLine in ${filesToDelete[@]}; do
                     if [ $(cut -d' ' -f2 <<<$fileLine) -eq "$selection" ]; then
@@ -189,19 +208,23 @@ fileDeletion() {
                     fi
                 done
                 if [ "$isIndexPresent" == true ]; then
-                    echo "${filesToDelete["$selection"]}"
-                    echo "Removing '$(echo "${filesToDelete["$selection"]}" | cut --complement -d' ' -f1,2,3)' from selection."
+                    for fileLine in ${filesToDelete[@]}; do
+                        if [ $(cut -d' ' -f2 <<<$fileLine) -eq "$selection" ]; then
+                            selectedFile=$fileLine
+                        fi
+                    done
                     awk -v selection="$selection" '{ $1 = ($2 == selection ? 0 : $1) } 1' /tmp/hdguard-file-list >/tmp/hdguard-file-list.temp
                     rm -f /tmp/hdguard-file-list
                     cat /tmp/hdguard-file-list.temp >/tmp/hdguard-file-list
                     rm -f /tmp/hdguard-file-list.temp
+                    echo "Removed '$(cut --complement -d' ' -f1,2,3 <<<$fileLine)' from selection."
                     delayWithDots 4
                 else
                     echo "Selected nonexisting file index. Please select an existing file index."
                     delayWithDots 4
                 fi
             else
-                echo "Incorrect selection. Please select a valid file index."
+                echo "Incorrect selection. Please select a valid file index by typing its index and pressing ENTER."
                 delayWithDots 4
             fi
             ;;
@@ -247,7 +270,7 @@ limitReachedAction() {
 
 ignoreAllWarnings=false
 getLimitFromArguments $# $1
-timeDelay=7
+timeDelay=60
 
 while true; do
     while true; do
