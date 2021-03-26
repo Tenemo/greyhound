@@ -94,7 +94,7 @@ getLimitFromArguments() {
         exit 1
     fi
     limit="$argument"
-    local numberRegex='^[0-9]+$'
+    numberRegex='^[0-9]+$'
     if ! [[ "$limit" =~ $numberRegex ]]; then
         echo "Passed an invalid size limit value."
         showRunWithHelp
@@ -107,57 +107,106 @@ getLimitFromArguments() {
     fi
 }
 
+updateFilesToDelete() {
+    local suggestedFilesSize=0
+    filesToDelete=()
+    while IFS= read -r line; do
+        if ! [[ $(awk '{print $1}' <<<$line) -eq 0 ]]; then
+            local fileSize=$(awk -F' ' '{print $3}' <<<$line)
+            suggestedFilesSize=$(($suggestedFilesSize + $fileSize))
+            IFS=$'\r\n'
+            filesToDelete+=("$line")
+            IFS=
+            if [ $suggestedFilesSize -gt $bytesToDelete ]; then
+                break
+            fi
+        fi
+    done </tmp/hdguard-file-list
+    if [ $bytesToDelete -gt $suggestedFilesSize ]; then
+        echo ""
+        echo "Not enough deletable files found to free up disk space usage to $limit%"
+        exit 1
+    fi
+    echo ""
+    echo "Files currently selected for deletion:"
+    echo ""
+    for fileLine in ${filesToDelete[@]}; do
+        echo $(cut --complement -d' ' -f1 <<<$fileLine | awk '{$2=($2/1024) " KB"; print}')
+    done
+    echo ""
+}
+
+fileDeletionPrompt() {
+    echo "Type [FILE_INDEX] and press ENTER to deselect the file from deletion."
+    echo "The list will be then populated with next files."
+    echo '"delete" + ENTER to start deleting selected files'
+    echo '"abort" + ENTER to start abort the deletion process'
+}
+
 fileDeletion() {
-    echo ""
-    echo "File deletion"
-    echo ""
 
     rm -f /tmp/hdguard-file-list
     find /home/$USER -perm /u+w,g+w -user $USER -not -path '*/.*' -type f -ls | tr -s ' ' | sort -rn -k7 | cut --complement -d' ' -f1,2,3,4,5,6,7,9,10,11 | awk '{print 1 " " NR " " $0}' >/tmp/hdguard-file-list
 
     if ! [ -s /tmp/hdguard-file-list ]; then
+        echo ""
         echo "No deletable files found"
         exit 1
     fi
 
     local totalSpace="$(df /home/$USER --output=size | tail -1)"
     local usedSpacePercentage=$(getUsedSpacePercentage)
-
-    ### DEBUG ###
-    # cat /tmp/hdguard-file-list | head -50
-    # local usedSpace="$(df /home/$USER --output=used | tail -1)"
-    # local availableSpace="$(df /home/$USER --output=avail | tail -1)"
-    # local reservedSpace="$(($totalSpace - $usedSpace - $availableSpace))"
-    echo "totalSpace:             $totalSpace KB"
-    # echo "usedSpace:              $usedSpace"
-    # echo "availableSpace:         $availableSpace"
-    # echo "reservedSpace:          $reservedSpace"
-    echo "usedSpacePercentage:      $usedSpacePercentage%"
-    # head -10 </tmp/hdguard-file-list
-    ### DEBUG ###
-
     local percentageToDelete=$(echo "$usedSpacePercentage - $limit" | bc)
-    echo "Total space % to delete:  $percentageToDelete%"
     local KBToDelete=$(echo "($percentageToDelete * $totalSpace / 100) + 1" | bc)
-    echo "KB to delete:             $KBToDelete KB"
-    local bytesToDelete=$(echo "$KBToDelete * 1024" | bc)
-    echo "bytesToDelete: $          $bytesToDelete B"
+    bytesToDelete=$(echo "$KBToDelete * 1024" | bc)
 
-    suggestedFilesSize=0
-    while IFS= read -r line; do
-        local fileSize=$(awk -F' ' '{print $3}' <<<$line)
-        suggestedFilesSize=$(($suggestedFilesSize + $fileSize))
-        if [ $suggestedFilesSize -gt $bytesToDelete ]; then
+    declare -a filesToDelete
+    while true; do
+        clear
+        showTitle
+        echo "File deletion:"
+        echo ""
+        echo "Total space % to delete:           $percentageToDelete%"
+        echo "Space to free up:                  $KBToDelete KB"
+        updateFilesToDelete
+        fileDeletionPrompt
+        read -r selection
+        case $selection in
+        delete)
+            echo "DELETE THE FILES"
             break
-        fi
-    done </tmp/hdguard-file-list
-
-    if [ $bytesToDelete -gt $suggestedFilesSize ]; then
-        echo "Not enough deletable files found to free up disk space usage to $limit%"
-        exit 1
-    fi
-
-    echo "suggestedFilesSize:       $suggestedFilesSize B"
+            ;;
+        abort)
+            echo "File deletion aborted."
+            break
+            ;;
+        *)
+            if [[ "$limit" =~ $numberRegex ]]; then
+                local isIndexPresent=false
+                for fileLine in ${filesToDelete[@]}; do
+                    if [ $(cut -d' ' -f2 <<<$fileLine) -eq "$selection" ]; then
+                        isIndexPresent=true
+                    fi
+                done
+                if [ "$isIndexPresent" == true ]; then
+                    echo "${filesToDelete["$selection"]}"
+                    echo "Removing '$(echo "${filesToDelete["$selection"]}" | cut --complement -d' ' -f1,2,3)' from selection."
+                    awk -v selection="$selection" '{ $1 = ($2 == selection ? 0 : $1) } 1' /tmp/hdguard-file-list >/tmp/hdguard-file-list.temp
+                    rm -f /tmp/hdguard-file-list
+                    cat /tmp/hdguard-file-list.temp >/tmp/hdguard-file-list
+                    rm -f /tmp/hdguard-file-list.temp
+                    delayWithDots 4
+                else
+                    echo "Selected nonexisting file index. Please select an existing file index."
+                    delayWithDots 4
+                fi
+            else
+                echo "Incorrect selection. Please select a valid file index."
+                delayWithDots 4
+            fi
+            ;;
+        esac
+    done
 
 }
 
@@ -198,21 +247,19 @@ limitReachedAction() {
 
 ignoreAllWarnings=false
 getLimitFromArguments $# $1
-timeDelay=5
+timeDelay=7
 
-# while true; do
-#     while true; do
-#         clear
-#         showTitle
-#         usagePercentage=$(getUsedSpacePercentage)
-#         if [ "$ignoreAllWarnings" = false ] && [ $(echo "$usagePercentage > $limit" | bc) -ne 0 ]; then
-#             break
-#         fi
-#         delayWithDots $timeDelay
-#     done
-#     limitReachedAction
-# done
-
-fileDeletion
+while true; do
+    while true; do
+        clear
+        showTitle
+        usagePercentage=$(getUsedSpacePercentage)
+        if [ "$ignoreAllWarnings" = false ] && [ $(echo "$usagePercentage > $limit" | bc) -ne 0 ]; then
+            break
+        fi
+        delayWithDots $timeDelay
+    done
+    limitReachedAction
+done
 
 exit 0
