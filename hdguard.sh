@@ -1,5 +1,24 @@
 #!/bin/bash
 
+showPartitionInformation() {
+    local partition=$(df /home/$USER --output=source | tail -1)
+    echo "Partition containing /home/\$USER:  $partition"
+
+    local disk="$(lsblk -no pkname $partition)"
+    echo "Disk containing $partition:         $disk"
+
+    local totalSpace="$(df /home/$USER -h --output=size | tail -1)"
+    echo "Partition size:                   $totalSpace"
+
+    local usedSpace="$(df /home/$USER -h --output=used | tail -1)"
+    echo "Used space:                       $usedSpace"
+
+    local availableSpace="$(df /home/$USER -h --output=avail | tail -1)"
+    echo "Available space:                  $availableSpace"
+
+    echo ""
+}
+
 showTitle() {
     echo ""
     echo "    _    _ _____       _____                     _ "
@@ -9,25 +28,16 @@ showTitle() {
     echo "   | |  | | |__| |   | |__| | |_| | (_| | | | (_| |"
     echo "   |_|  |_|_____/     \_____|\__,_|\__,_|_|  \__,_|"
     echo ""
+    showPartitionInformation
 }
 
-showPartitionInformation() {
-    partition=$(df /home/$USER --output=source | tail -1)
-    echo "  Partition containing /home/\$USER:  $partition"
-
-    disk="$(lsblk -no pkname $partition)"
-    echo "  Disk containing $partition:         $disk"
-
-    totalSpace="$(df /home/$USER -h --output=size | tail -1)"
-    echo "  Partition size:                   $totalSpace"
-
-    usedSpace="$(df /home/$USER -h --output=used | tail -1)"
-    echo "  Used space:                       $usedSpace"
-
-    availableSpace="$(df /home/$USER -h --output=avail | tail -1)"
-    echo "  Available space:                  $availableSpace"
-
-    echo ""
+delayWithDots() {
+    local delayLength=$1
+    while [ $delayLength -gt 1 ]; do
+        echo -n "."
+        delayLength=$(($delayLength - 1))
+        sleep 1
+    done
 }
 
 help() {
@@ -84,25 +94,61 @@ getLimitFromArguments() {
     fi
 }
 
+limitReachedAction() {
+    echo "Available space limit reached."
+    echo ""
+    echo "1) Delete files to free up space"
+    echo "2) Ignore warning"
+    echo "3) Ignore this and all future warnings"
+    read -rsn1 selection
+    case $selection in
+    1)
+        echo ""
+        echo "Files deleted"
+        echo ""
+        delayWithDots $timeDelay
+        ;;
+    2)
+        echo ""
+        echo "Ignored warning"
+        echo ""
+        delayWithDots $timeDelay
+        ;;
+    3)
+        echo ""
+        echo "Ignored warning and disabled future warnings"
+        echo ""
+        delayWithDots $timeDelay
+        ignoreAllWarnings=true
+        ;;
+    *)
+        echo ""
+        echo "Incorrect selection."
+        echo ""
+        delayWithDots 3
+        ;;
+    esac
 
+}
+
+ignoreAllWarnings=false
 getLimitFromArguments $# $1
+timeDelay=5
 
 while true; do
     while true; do
         clear
         showTitle
-        showPartitionInformation
         usagePercentage="$(df /home/$USER --output=pcent | tail -1 | tr -d '%')"
-        echo "  Taken up space user-set limit:     $limit%"
-        echo "  Current partition space usage:    $usagePercentage%"
+        echo "Taken up space user-set limit:     $limit%"
+        echo "Current partition space usage:    $usagePercentage%"
         echo ""
-        if [ $usagePercentage -gt $limit ]; then 
-            echo "LIMIT REACHED"
-            sleep 2
+        if [ "$ignoreAllWarnings" = false ] && [ $usagePercentage -gt $limit ]; then
             break
         fi
-        sleep 60
+        delayWithDots $timeDelay
     done
+    limitReachedAction
 done
 
 exit 0
